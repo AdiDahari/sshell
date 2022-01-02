@@ -8,210 +8,200 @@
 #include <string.h>
 #include <signal.h>
 
-char prompt[20] = "hello";
+#define OUT 0 // Output direction
+#define APP 1 // Append direction
+#define IN 2  // Input direction
+int status;
+char *prompt = "hello";
+
+void handler(int sig);
+void pipeTask(char *cmd);
+void asyncTask(char *cmd);
+void redirectTask(char *cmd, int direction);
+void basicTask(char *cmd);
+
+int main()
+{
+    signal(SIGINT, handler);
+    char cmd[1024], saved_cmd[1024];
+    while (1)
+    {
+        // Prints prompt and gets command from sdtin
+        printf("%s: ", prompt);
+        fgets(cmd, 1024, stdin);
+        cmd[strlen(cmd) - 1] = '\0';
+
+        /*
+        Checking for quit / repeat last command requests.
+        else: saving current command
+        */
+        if (!strcmp(cmd, "quit"))
+            break;
+
+        else if (!strcmp(cmd, "!!"))
+            strcpy(cmd, saved_cmd);
+
+        else
+            strcpy(saved_cmd, cmd);
+
+        // Checking if command contains a pipe
+        if (strchr(cmd, '|'))
+            pipeTask(cmd);
+
+        // Checking for asynchronic command
+        else if (strchr(cmd, '&'))
+            asyncTask(cmd);
+
+        /*  Checking for redirection commands */
+
+        // Create / Overwrite
+        else if (strchr(cmd, '>') && !strstr(cmd, ">>"))
+            redirectTask(cmd, OUT);
+
+        // Input file to command
+        else if (strchr(cmd, '<'))
+            redirectTask(cmd, IN);
+
+        // Append to file
+        else if (strstr(cmd, ">>"))
+            redirectTask(cmd, APP);
+
+        else
+            basicTask(cmd);
+    }
+}
+
+int parseCmd(char **parsed_cmd, char *cmd, const char *delimeter)
+{
+    char *token;
+    token = strtok(cmd, delimeter);
+    int counter = -1;
+
+    while (token)
+    {
+        parsed_cmd[++counter] = malloc(strlen(token) + 1);
+        strcpy(parsed_cmd[counter], token);
+        if (delimeter == "|")
+        {
+            if (parsed_cmd[counter][strlen(token) - 1] == ' ')
+                parsed_cmd[counter][strlen(token) - 1] = '\0';
+            if (parsed_cmd[counter][0] == ' ')
+                memmove(parsed_cmd[counter], parsed_cmd[counter] + 1, strlen(token));
+        }
+        parsed_cmd[counter][strlen(token) + 1] = '\0';
+        token = strtok(NULL, delimeter);
+    }
+    parsed_cmd[++counter] = NULL;
+    return counter;
+}
 
 void handler(int sig)
 {
     char *msg = "You typed Control-C!\n";
     char final_msg[50];
     strcpy(final_msg, msg);
-    strcat(final_msg,prompt);
+    strcat(final_msg, prompt);
     strcat(final_msg, ": ");
     strcat(final_msg, "\0");
     write(1, final_msg, strlen(final_msg));
 }
 
-int main()
+void pipeTask(char *cmd)
 {
-    char command[1024], saved_cmd[1024];
-    char *token;
-    int i;
-    char *file;
-    int fd, amper, redirect, piping, retid, status, argc1, append, redirect_left;
-    int fildes[2];
-    char *argv1[10], *argv2[10];
-    int flag = 0;
-    memset(saved_cmd, '\0', 1024);
-    while (1)
+    char *parsed_cmd[50];
+    int cmds = parseCmd(parsed_cmd, cmd, "|");
+    char *inner_cmd[50];
+    int fd[cmds][2];
+    for (int i = 0; i < cmds; ++i)
     {
-        signal(SIGINT, handler);
-
-        printf("%s: ", prompt);
-        fgets(command, 1024, stdin);
-        command[strlen(command) - 1] = '\0';
-        piping = 0;
-        redirect = 0;
-        redirect_left = 0;
-        append = 0;
-
-        if (!strcmp(command, "quit"))
-        {
-            break;
-        }
-
-        if (!strcmp(command, "!!"))
-        {
-            strcpy(command, saved_cmd);
-        }
-        else
-        {
-            strcpy(saved_cmd, command);
-        }
-
-        /* parse command line */
-        i = 0;
-        token = strtok(command, " ");
-        while (token != NULL)
-        {
-            argv1[i] = token;
-            token = strtok(NULL, " ");
-            i++;
-            if (token && !strcmp(token, "|"))
-            {
-                piping = 1;
-                break;
-            }
-        }
-        argv1[i] = NULL;
-        argc1 = i;
-
-        /* Is command empty */
-        if (argv1[0] == NULL)
-            continue;
-
-        /* Does command contain pipe */
-        if (piping)
-        {
-            i = 0;
-            while (token != NULL)
-            {
-                token = strtok(NULL, " ");
-                argv2[i] = token;
-                i++;
-            }
-            argv2[i] = NULL;
-        }
-
-        /* Does command line end with & */
-        if (!strcmp(argv1[argc1 - 1], "&"))
-        {
-            amper = 1;
-            argv1[argc1 - 1] = NULL;
-        }
-        else
-            amper = 0;
-
-        if (argc1 > 1 && !strncmp(argv1[argc1 - 2], ">>", 2))
-        {
-            append = 1;
-            argv1[argc1 - 2] = NULL;
-            file = argv1[argc1 - 1];
-        }
-
-        else if (argc1 > 1 && !strcmp(argv1[argc1 - 2], ">"))
-        {
-            redirect = 1;
-            argv1[argc1 - 2] = NULL;
-            file = argv1[argc1 - 1];
-        }
-
-        else if (argc1 > 1 && !strcmp(argv1[argc1 - 2], "<"))
-        {
-            redirect_left = 1;
-            argv1[argc1 - 2] = NULL;
-            file = argv1[argc1 - 1];
-        }
-
-        else if (!strcmp(argv1[0], "prompt") && !strncmp(argv1[1], "=", 1) && argc1 == 3)
-        {
-            strcpy(prompt, argv1[2]);
-            continue;
-        }
-
-        else if (!strcmp(argv1[0], "echo"))
-        {
-            if (!strcmp(argv1[1], "$?"))
-            {
-                printf("%d\n", status);
-                continue;
-            }
-            else
-            {
-
-                for (int itr = 1; itr < i; ++itr)
-                {
-                    printf("%s ", argv1[itr]);
-                }
-                printf("\n");
-                continue;
-            }
-        }
-
-        else if (!strcmp(argv1[0], "cd"))
-        {
-            chdir(argv1[1]);
-            continue;
-        }
-        /* for commands not part of the shell command language */
+        int inner_cmds = parseCmd(inner_cmd, parsed_cmd[i], " ");
+        if (i != cmds - 1)
+            pipe(fd[i]);
 
         if (fork() == 0)
         {
-            /* redirection of IO ? */
-            if (redirect)
+            if (i != cmds - 1)
             {
-                fd = creat(file, 0660);
-                close(STDOUT_FILENO);
-                dup(fd);
-                close(fd);
-                /* stdout is now redirected */
+                dup2(fd[i][1], 1);
+                close(fd[i][0]);
+                close(fd[i][1]);
             }
-
-            if (append)
+            if (i != 0)
             {
-                fd = open(file, O_CREAT | O_APPEND | O_RDWR, 0660);
-                close(STDOUT_FILENO);
-                dup(fd);
-                close(fd);
+                dup2(fd[i - 1][0], 0);
+                close(fd[i - 1][0]);
+                close(fd[i - 1][1]);
             }
-
-            if (redirect_left)
-            {
-                fd = open(file, O_RDONLY, 0660);
-                close(STDIN_FILENO);
-                dup(fd);
-                close(fd);
-            }
-
-            if (piping)
-            {
-                pipe(fildes);
-                if (fork() == 0)
-                {
-                    /* first component of command line */
-                    close(STDOUT_FILENO);
-                    dup(fildes[1]);
-                    close(fildes[1]);
-                    close(fildes[0]);
-                    /* stdout now goes to pipe */
-                    /* child process does command */
-                    execvp(argv1[0], argv1);
-                }
-                /* 2nd command component of command line */
-                close(STDIN_FILENO);
-                dup(fildes[0]);
-                close(fildes[0]);
-                close(fildes[1]);
-                /* standard input now comes from pipe */
-                execvp(argv2[0], argv2);
-            }
-            else
-                execvp(argv1[0], argv1);
+            execvp(inner_cmd[0], inner_cmd);
         }
-        /* parent continues over here... */
-        /* waits for child to exit if required */
-        if (amper == 0)
-            retid = wait(&status);
+        if (i != 0)
+        {
+            close(fd[i - 1][0]);
+            close(fd[i - 1][1]);
+        }
+        wait(NULL);
     }
+}
 
-    return 0;
+void asyncTask(char *cmd)
+{
+    if (fork() == 0)
+    {
+        char *parsed_cmd[50];
+        int cmds = parseCmd(parsed_cmd, cmd, " ");
+        parsed_cmd[cmds - 1] = NULL;
+        execvp(parsed_cmd[0], parsed_cmd);
+    }
+}
+
+void redirectTask(char *cmd, int direction)
+{
+
+    if (fork() == 0)
+    {
+        char *parsed_cmd[50];
+        int cmds = parseCmd(parsed_cmd, cmd, " ");
+        int fd;
+        switch (direction)
+        {
+        case OUT:
+            fd = creat(parsed_cmd[cmds - 1], 0660);
+            dup2(fd, 1);
+            break;
+
+        case APP:
+            fd = open(parsed_cmd[cmds - 1], O_CREAT | O_APPEND | O_RDWR, 0660);
+            dup2(fd, 1);
+            break;
+
+        case IN:
+            fd = open(parsed_cmd[cmds - 1], O_RDONLY, 0660);
+            dup2(fd, 0);
+            break;
+
+        default:
+            break;
+        }
+
+        parsed_cmd[cmds - 2] = parsed_cmd[cmds - 1] = NULL;
+        execvp(parsed_cmd[0], parsed_cmd);
+    }
+    else
+        wait(&status);
+}
+
+void basicTask(char *cmd)
+{
+    char *parsed_cmd[50];
+    parseCmd(parsed_cmd, cmd, " ");
+    if (!strcmp(parsed_cmd[0], "cd"))
+        chdir(parsed_cmd[1]);
+    else if (!strcmp(parsed_cmd[0], "prompt"))
+        prompt = parsed_cmd[2];
+    else if (!strcmp(parsed_cmd[0], "echo") && !strcmp(parsed_cmd[1], "$?"))
+        printf("%d\n", status);
+    else if (fork() == 0)
+        execvp(parsed_cmd[0], parsed_cmd);
+    else
+        wait(&status);
 }
