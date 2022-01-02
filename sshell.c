@@ -1,6 +1,6 @@
 /**
  * @file sshell.c
- * @author Adi Dahari, Shahk Nir
+ * @author Adi Dahari, Shahak Nir
  * @brief 
  * @version 1.0
  * @date 2022-01-02
